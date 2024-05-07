@@ -1,2 +1,2 @@
 # DCN_chat_program
-UIC DCN Group Assignment2
+UIC DCN 24S Group Assignment2
