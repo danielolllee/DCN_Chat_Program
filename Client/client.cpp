@@ -7,11 +7,10 @@
 #define DEFAULT_PORT 5019
 #define BUFFER_SIZE 100
 
-int main(int argc, char** argv){
+int main(int argc, char** argv) {
     char szBuff[BUFFER_SIZE];
     int msg_len;
     struct sockaddr_in server_addr;
-    struct hostent *hp;
     SOCKET connect_sock;
     WSADATA wsaData;
 
@@ -19,93 +18,103 @@ int main(int argc, char** argv){
     unsigned short port = DEFAULT_PORT;
     unsigned int addr;
 
-    if (argc != 3){
+    if (argc != 3) {
         printf("Usage: ./client.exe [server name] [port number]\n");
         return -1;
     }
-    else{
+    else {
         server_name = argv[1];
         port = atoi(argv[2]);
     }
 
-    if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR){
-        // stderr: standard error are printed to the screen.
+    if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR) {
         fprintf(stderr, "WSAStartup failed with error %d\n", WSAGetLastError());
-        //WSACleanup function terminates use of the Windows Sockets DLL.
         WSACleanup();
         return -1;
     }
 
-    if (isalpha(server_name[0])){
-        hp = gethostbyname(server_name);
-    }
-    else{
-        addr = inet_addr(server_name);
-        hp = gethostbyaddr((char*)&addr, 4, AF_INET);
-    }
-
-    if (hp == NULL){
-        fprintf(stderr, "Cannot resolve address: %d\n", WSAGetLastError());
-        WSACleanup();
-        return -1;
-    }
-
-    //copy the resolved information into the sockaddr_in structure
     memset(&server_addr, 0, sizeof(server_addr));
-    memcpy(&(server_addr.sin_addr), hp->h_addr, hp->h_length);
-    server_addr.sin_family = hp->h_addrtype;
+    server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
 
-    connect_sock = socket(AF_INET,SOCK_STREAM, 0);	// TCP socket
+    if (isalpha(server_name[0])) {
+        struct hostent* hp = gethostbyname(server_name);
+        if (hp == NULL) {
+            fprintf(stderr, "Cannot resolve address: %d\n", WSAGetLastError());
+            WSACleanup();
+            return -1;
+        }
+        memcpy(&(server_addr.sin_addr), hp->h_addr, hp->h_length);
+    }
+    else {
+        server_addr.sin_addr.s_addr = inet_addr(server_name);
+    }
 
-    if (connect_sock == INVALID_SOCKET){
+    connect_sock = socket(AF_INET, SOCK_STREAM, 0);  // TCP socket
+
+    if (connect_sock == INVALID_SOCKET) {
         fprintf(stderr, "socket() failed with error %d\n", WSAGetLastError());
         WSACleanup();
         return -1;
     }
 
-    printf("Client connecting to: %s\n", hp->h_name);
+    printf("Client connecting to: %s\n", server_name);
 
-    if (connect(connect_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR){
-        fprintf(stderr, "connect() failed with error %d\n", WSAGetLastError());
+    // Try to connect multiple times until successful or max attempts reached
+    int attempts = 0;
+    while (attempts < 10) {  // Adjust max attempts as needed
+        if (connect(connect_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+            fprintf(stderr, "connect() failed with error %d, attempt %d\n", WSAGetLastError(), attempts + 1);
+            Sleep(1000);  // Wait for a while before retrying
+            attempts++;
+        }
+        else {
+            break;  // Connection successful, exit loop
+        }
+    }
+
+    if (attempts >= 10) {
+        fprintf(stderr, "Failed to connect after %d attempts\n", attempts);
+        closesocket(connect_sock);
         WSACleanup();
         return -1;
     }
 
-    while (1){
-        printf("input character string: ");
+    while (1) {
+        printf("Input character string: ");
         fgets(szBuff, sizeof(szBuff), stdin);
         szBuff[strcspn(szBuff, "\n")] = '\0';
 
         msg_len = send(connect_sock, szBuff, (int)strlen(szBuff), 0);
 
-        if (msg_len == SOCKET_ERROR){
+        if (msg_len == SOCKET_ERROR) {
             fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
             break;
         }
 
-        if (msg_len == 0){
-            printf("server closed connection\n");
+        if (msg_len == 0) {
+            printf("Server closed connection\n");
             break;
         }
 
         msg_len = recv(connect_sock, szBuff, sizeof(szBuff) - 1, 0);
 
-        if (msg_len == SOCKET_ERROR){
-            fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
+        if (msg_len == SOCKET_ERROR) {
+            fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
             break;
         }
 
-        if (msg_len == 0){
-            printf("server closed connection\n");
+        if (msg_len == 0) {
+            printf("Server closed connection\n");
             break;
         }
 
         szBuff[msg_len] = '\0';
-        printf("Echo from the server: %s.\n", szBuff);
+        printf("Echo from the server: %s\n", szBuff);
     }
 
     shutdown(connect_sock, SD_SEND);
     closesocket(connect_sock);
     WSACleanup();
+    return 0;
 }
