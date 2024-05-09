@@ -1,3 +1,3 @@
-D:/Programme/DCN_chat_program/Client/cmake-build-debug/CMakeFiles/Client.dir
-D:/Programme/DCN_chat_program/Client/cmake-build-debug/CMakeFiles/edit_cache.dir
-D:/Programme/DCN_chat_program/Client/cmake-build-debug/CMakeFiles/rebuild_cache.dir
+C:/Users/avery/Desktop/DCN/DCN_chat_program/Client/cmake-build-debug/CMakeFiles/Client.dir
+C:/Users/avery/Desktop/DCN/DCN_chat_program/Client/cmake-build-debug/CMakeFiles/edit_cache.dir
+C:/Users/avery/Desktop/DCN/DCN_chat_program/Client/cmake-build-debug/CMakeFiles/rebuild_cache.dir
