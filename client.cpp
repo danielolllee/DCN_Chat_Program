@@ -1,36 +1,29 @@
 #include <winsock2.h>
-#include <cstdlib>
 #include <cstdio>
-#include <cstring>
-#pragma comment(lib, "ws2_32.lib")
+#include <string>
+#include <thread>
+#include <iostream>
 
 #define DEFAULT_PORT 5019
-#define BUFFER_SIZE 100
+#define DEFAULT_IP "127.0.0.1"
+#define BUFFER_SIZE 256
 #define MAX_CONNECT_ATTEMPT 10
 
-int main(int argc, char** argv){
-    int msg_len;
-    int attempts = 0;
-    char szBuff[BUFFER_SIZE] = {0};
+void send_msg(SOCKET sock);
+void recv_msg(SOCKET sock);
 
+std::string name, msg;
+
+int main(){
+    int attempts = 0;
     struct hostent* hp;
     struct sockaddr_in server_addr = {0};
 
     SOCKET client_sock;
     WSADATA wsaData;
 
-    const char* server_name = "localhost";
+    const char* server_name = DEFAULT_IP;
     unsigned short port = DEFAULT_PORT;
-
-    // Handle add client command
-    if (argc != 3){
-        printf("Usage: ./client.exe [server name] [port number]\n");
-        return -1;
-    }
-    else{
-        server_name = argv[1];
-        port = atoi(argv[2]);
-    }
 
     // Handle WSAStartup
     if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR){
@@ -85,9 +78,46 @@ int main(int argc, char** argv){
         return -1;
     }
 
-    while (true){
+    // Announce username to server
+    char szBuff[BUFFER_SIZE] = {0};
+    while(true){
+        printf("Pick a username: ");
+        std::getline(std::cin, name);
+        if (name.length() > 32 || name.length() < 3){
+            printf("Username shall have 3-32 characters. Please choose another one.\n");
+            continue;
+        }
+        std::string my_name = "#New Client:" + name;
+        send(client_sock, my_name.c_str(), my_name.length() + 1, 0);
+        int msg_len = recv(client_sock, szBuff, sizeof(szBuff)-1, 0);
+        printf("%s\n", szBuff);
+        if(msg_len == my_name.length() + 1){
+            break;
+        }
+        else{
+            name.clear();
+            continue;
+        }
+    }
+
+    // Send & Recv messages
+    std::thread snd(send_msg, client_sock);
+    std::thread rcv(recv_msg, client_sock);
+
+    snd.join();
+    rcv.join();
+
+    shutdown(client_sock, SD_SEND);
+    closesocket(client_sock);
+    WSACleanup();
+    return 0;
+}
+
+void send_msg(SOCKET sock){
+    int msg_len;
+    char szBuff[BUFFER_SIZE] = {0};
+    while(true){
         // Get user input
-        printf("Input character string: ");
         fgets(szBuff, sizeof(szBuff), stdin);
         szBuff[strcspn(szBuff, "\n")] = '\0';
 
@@ -96,8 +126,16 @@ int main(int argc, char** argv){
             continue;
         }
 
+        // Quit
+        if (std::string(szBuff) == "#Quit#"|| std::string(szBuff) == "#quit#"){
+            closesocket(sock);
+            exit(0);
+        }
+
+        msg = "[" + name + "] " + szBuff;
+
         // Send input to server
-        msg_len = send(client_sock, szBuff, (int)strlen(szBuff), 0);
+        msg_len = send(sock, msg.c_str(), msg.length() + 1, 0);
         if (msg_len == SOCKET_ERROR){
             fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
             break;
@@ -105,31 +143,36 @@ int main(int argc, char** argv){
 
         // Check if server closed connection
         if (msg_len == 0){
-            closesocket(client_sock);
+            closesocket(sock);
             printf("server closed connection\n");
             break;
         }
-
-        // Get respond from server
-        msg_len = recv(client_sock, szBuff, sizeof(szBuff)-1, 0);
-        if (msg_len == SOCKET_ERROR){
-            fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
-            break;
-        }
-
-        // Check if server closed connection
-        if (msg_len == 0){
-            closesocket(client_sock);
-            printf("server closed connection\n");
-            break;
-        }
-
-        szBuff[msg_len] = '\0';
-        printf("Echo from the server: %s\n", szBuff);
     }
+}
 
-    shutdown(client_sock, SD_SEND);
-    closesocket(client_sock);
-    WSACleanup();
-    return 0;
+void recv_msg(SOCKET sock){
+    int msg_len;
+    char szBuff[BUFFER_SIZE + name.length() + 1];
+
+    while(true){
+        // Get respond from server
+        msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
+        if (msg_len == SOCKET_ERROR){
+            fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
+            break;
+        }
+
+        // Check if server closed connection
+        if (msg_len == 0){
+            closesocket(sock);
+            printf("server closed connection\n");
+            break;
+        }
+
+        // Display other user's messages
+        szBuff[msg_len] = '\0';
+        if(strcmp(szBuff, msg.c_str()) != 0){
+            printf("%s\n", szBuff);
+        }
+    }
 }

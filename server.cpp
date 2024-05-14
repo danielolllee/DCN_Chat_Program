@@ -1,142 +1,270 @@
 #include <cstdio>
-#include <process.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <iostream>
+#include <thread>
+#include <sstream>
 
-#define DEFAULT_PORT 5019
-#define BUFFER_SIZE 100
-#define MAX_CLIENT 100
+#define SERVER_PORT 5019
+#define BUFFER_SIZE 256
+#define MAX_CLIENT 128
 
-void accept_conn(void* client_msg_sock);
+void handle_conn(SOCKET sock);
+void handle_msg(const std::string &msg);
+void command_listener();
 
-int main(int argc, char** argv) {
-    int client_count = 0;
-	struct sockaddr_in server_addr{}, client_addr{};
+int client_count = 0;
+bool server_status = true;
+std::mutex mtx;
+std::unordered_map<std::string, int> msg_socks;
 
-	WSADATA wsaData;
-    CRITICAL_SECTION cs;
+int main(){
+    WSADATA wsaData;
     SOCKET server_sock, msg_sock;
+    struct sockaddr_in server_addr{}, client_addr{};
 
-    // Handle WSAStartup
-	if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR){
-		fprintf(stderr, "WSAStartup failed with error %d\n", WSAGetLastError());
-		WSACleanup();
-		return -1;
-	}
+    // WSAStartup
+    if (WSAStartup(0x202, &wsaData) == SOCKET_ERROR){
+        fprintf(stderr, "WSAStartup failed with error %d\n", WSAGetLastError());
+        WSACleanup();
+        return -1;
+    }
 
-	// Initialize the address structure for IPV4 listening
-	server_addr.sin_family = AF_INET;
+    // Initialize the address structure for IPV4 listening
+    server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(DEFAULT_PORT);
+    server_addr.sin_port = htons(SERVER_PORT);
 
     // Create a TCP socket
-	server_sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (server_sock == INVALID_SOCKET){
-		fprintf(stderr, "socket() failed with error %d\n", WSAGetLastError());
-        closesocket(server_sock);
-		WSACleanup();
-		return -1;
-	}
+    server_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_sock == INVALID_SOCKET){
+        fprintf(stderr, "socket() failed with error %d\n", WSAGetLastError());
+        WSACleanup();
+        return -1;
+    }
 
     // Bind server socket to server_addr
-	if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR){
-		fprintf(stderr, "bind() failed with error %d\n", WSAGetLastError());
+    if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR){
+        fprintf(stderr, "bind() failed with error %d\n", WSAGetLastError());
         closesocket(server_sock);
-		WSACleanup();
-		return -1;
-	}
+        WSACleanup();
+        return -1;
+    }
 
-	// Set up server socket for listening incoming connections
-	if (listen(server_sock, MAX_CLIENT) == SOCKET_ERROR){
-		fprintf(stderr, "listen() failed with error %d\n", WSAGetLastError());
+    // Listen incoming connections
+    if (listen(server_sock, MAX_CLIENT) == SOCKET_ERROR){
+        fprintf(stderr, "listen() failed with error %d\n", WSAGetLastError());
         closesocket(server_sock);
-		WSACleanup();
-		return -1;
-	}
+        WSACleanup();
+        return -1;
+    }
+
+    // Start the command listener thread
+    std::thread command_thread(command_listener);
+    command_thread.detach();
 
     // Waiting for connections
-	printf("Waiting for connections ........\n");
-    InitializeCriticalSection(&cs);
+    printf("Waiting for connections ........\n");
 
-    while (true) {
+    // Accept connections
+    while (server_status){
         if(client_count < MAX_CLIENT){
             // Get client address
             int client_addr_len = sizeof(client_addr);
             msg_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_addr_len);
             if (msg_sock == INVALID_SOCKET) {
                 fprintf(stderr, "accept() failed with error %d\n", WSAGetLastError());
-                closesocket(msg_sock);
-                return -1;
+                continue;
             }
+
             // Successfully connected to client notice
             char addr_buffer[INET_ADDRSTRLEN];
             printf("accepted connection from %s, port %d\n",
                    inet_ntop(AF_INET, &(client_addr.sin_addr), addr_buffer, INET_ADDRSTRLEN),
                    htons(client_addr.sin_port));
-            // Start accept_Conn()
-            EnterCriticalSection(&cs);
-            if (_beginthread(accept_conn, 0, (void*)&msg_sock) == -1){
-                fprintf(stderr, "Thread creation failed\n");
-                closesocket(msg_sock);
-                LeaveCriticalSection(&cs);
-                continue;
-            }
+
+            // Accepting the connection in a new thread
+            mtx.lock();
+            std::thread th(handle_conn, msg_sock);
+            th.detach();
             client_count++;
-            LeaveCriticalSection(&cs);
+            mtx.unlock();
         }
         else{
             printf("Maximum client count reached. Closing connection.\n");
+            Sleep(1000);
         }
     }
-    DeleteCriticalSection(&cs);
-	closesocket(server_sock);
-	WSACleanup();
+    closesocket(msg_sock);
+    closesocket(server_sock);
+    WSACleanup();
     return 0;
 }
 
-void accept_conn(void* client_msg_sock) {
+void handle_conn(SOCKET sock){
     int msg_len;
+    char name[32] = {0};
     char szBuff[BUFFER_SIZE] = {0};
     char addr_buffer[INET_ADDRSTRLEN] = {0};
+    char msg_prefix[13] = {0};
+    std::string feedback_msg;
 
-    // Cast to the main() msg_sock
-    SOCKET msg_sock = *((SOCKET*)client_msg_sock);
+    // Command Prefixes
+    char new_client_prefix[13] = "#New Client:";
 
     // Get the address information inside the msg_sock socket descriptor
     struct sockaddr_in client_addr{};
     int addr_len = sizeof(client_addr);
-    getpeername(msg_sock, (struct sockaddr*)&client_addr, &addr_len);
+    getpeername(sock, (struct sockaddr*)&client_addr, &addr_len);
 
-    while (true){
+    // Handling username
+    while(server_status){
         // Receive client message
-        msg_len = recv(msg_sock, szBuff, sizeof(szBuff)-1, 0);
-        // Handle recv() exceptions
+        msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
         if (msg_len == SOCKET_ERROR){
             fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
-            return;
+            break;
+        }
+        if (msg_len == 0){
+            printf("Client %s closed connection\n", name);
+            mtx.lock();
+            client_count--;
+            mtx.unlock();
+            closesocket(sock);
+            break;
         }
 
-        // Check if client closed connection
+        strncpy(msg_prefix, szBuff, 12);
+        msg_prefix[12] = '\0';
+
+        if (strcmp(msg_prefix, new_client_prefix) == 0){
+            strcpy(name, szBuff + 12);
+            if (msg_socks.find(name) == msg_socks.end()){
+                printf("The name of client %s %llu: %s\n",
+                       inet_ntop(AF_INET, &(client_addr.sin_addr), addr_buffer, INET_ADDRSTRLEN),
+                       sock, name);
+                msg_socks[name] = sock;
+                handle_msg(szBuff);
+                break;
+            }
+            else{
+                feedback_msg = "User " + std::string(name) + " already exists. Please choose another one!";
+                send(sock, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                continue;
+            }
+        }
+    }
+
+    // Handling messages
+    while (server_status){
+        // Receive client message
+        msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
+        if (msg_len == SOCKET_ERROR){
+            fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
+            feedback_msg = "Error occurred when receiving message.\n";
+            send(sock, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+            break;
+        }
         if (msg_len == 0){
             printf("Client closed connection\n");
-            closesocket(msg_sock);
-            return;
+            break;
         }
 
         // Ensure szBuff is null-terminated after receiving data
         szBuff[msg_len] = '\0';
         // Successfully receive notification
-        printf("Bytes Received: %d, message: %s from %s\n", msg_len, szBuff, inet_ntop(AF_INET, &(client_addr.sin_addr), addr_buffer, INET_ADDRSTRLEN));
+        printf("Bytes Received: %d, message: %s from %s\n", msg_len, szBuff, name);
 
-        // Respond to the client
-        msg_len = send(msg_sock, szBuff, msg_len, 0);
+        // Handle message
+        handle_msg(std::string(szBuff));
+    }
 
-        // Check if client closed connection
-        if (msg_len == 0){
-            printf("Client closed connection\n");
-            closesocket(msg_sock);
-            return;
+    feedback_msg = "[System] " + std::string(name) + " exit the chatroom.\n";
+    handle_msg(feedback_msg);
+    mtx.lock();
+    msg_socks.erase(name);
+    client_count--;
+    mtx.unlock();
+    closesocket(sock);
+    return;
+}
+
+void handle_msg(const std::string &msg){
+    mtx.lock();
+
+    std::string prefix = "@";
+    int first_space = msg.find_first_of(" ");
+
+    // Direct message
+    if (msg.compare(first_space+1, 1, prefix) == 0){
+        int space = msg.find_first_of(" ", first_space+1);
+        std::string receive_name = msg.substr(first_space+2, space-first_space-2);
+        std::string send_name = msg.substr(1, first_space-2);
+        // If user does not exist
+        if(msg_socks.find(receive_name) == msg_socks.end()){
+            std::string error_msg = "[error] there is no client named " + receive_name;
+            send(msg_socks[send_name], error_msg.c_str(), error_msg.length()+1, 0);
+        }
+        else{
+            send(msg_socks[receive_name], msg.c_str(), msg.length()+1, 0);
+            send(msg_socks[send_name], msg.c_str(), msg.length()+1, 0);
+        }
+    }
+    // Group Message
+    else {
+        for (const auto &it : msg_socks){
+            send(it.second, msg.c_str(), msg.length()+1, 0);
+        }
+    }
+
+    mtx.unlock();
+}
+
+void command_listener() {
+    std::string command;
+    std::string feedback_msg;
+
+    while(true){
+        std::getline(std::cin, command);
+        std::istringstream iss(command);
+        std::string cmd, arg;
+        iss >> cmd >> arg;
+
+        if (cmd == "#quit" || cmd == "#Quit") {
+            std::cout << "Shutting down server...\n";
+            server_status = false;
+
+            // Close all client sockets
+            mtx.lock();
+            for (auto &entry : msg_socks) {
+                closesocket(entry.second);
+            }
+            msg_socks.clear();
+            mtx.unlock();
+
+            exit(0);
+        }
+        else if (cmd == "#del" && !arg.empty()) {
+            mtx.lock();
+            auto it = msg_socks.find(arg);
+            if (it != msg_socks.end()) {
+                closesocket(it->second);
+                msg_socks.erase(it);
+                std::cout << "User " << arg << " has been deleted.\n";
+                feedback_msg = "#Client " + arg + " has been deleted from this chatroom.\n";
+                handle_msg(feedback_msg);
+                client_count--;
+            }
+            else {
+                std::cout << "No such user: " << arg << "\n";
+            }
+            mtx.unlock();
+        }
+        else{
+            printf("Invalid command.\n");
         }
     }
 }
