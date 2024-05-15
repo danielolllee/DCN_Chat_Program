@@ -17,6 +17,7 @@
 void handle_conn(SOCKET sock);
 void handle_msg(const std::string &msg, SOCKET sender);
 void command_listener();
+void broadcast_clients_list();
 
 int client_count = 0;
 bool server_status = true;
@@ -155,6 +156,7 @@ void handle_conn(SOCKET sock){
                        sock, name);
                 msg_socks[name] = sock;
                 handle_msg(szBuff, sock);
+                broadcast_clients_list();
                 break;
             }
             else{
@@ -194,6 +196,7 @@ void handle_conn(SOCKET sock){
     msg_socks.erase(name);
     client_count--;
     mtx.unlock();
+    broadcast_clients_list();
     closesocket(sock);
     return;
 }
@@ -290,6 +293,18 @@ void handle_msg(const std::string &msg, SOCKET sender) {
     }
 
     mtx.unlock();
+}
+
+void broadcast_clients_list() {
+    std::string clients_list = "Current clients: ";
+    for (const auto& pair : msg_socks) {
+        clients_list += pair.first + " ";
+    }
+    clients_list.pop_back(); // Remove the trailing space
+
+    for (const auto& pair : msg_socks) {
+        send(pair.second, clients_list.c_str(), clients_list.length() + 1, 0);
+    }
 }
 
 void command_listener() {

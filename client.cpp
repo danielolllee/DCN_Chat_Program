@@ -11,6 +11,7 @@
 
 void send_msg(SOCKET sock);
 void recv_msg(SOCKET sock);
+void recv_clients_list(SOCKET sock);
 
 std::string name, msg;
 
@@ -103,9 +104,11 @@ int main(){
     // Send & Recv messages
     std::thread snd(send_msg, client_sock);
     std::thread rcv(recv_msg, client_sock);
+    std::thread rcv_clients(recv_clients_list, client_sock);
 
     snd.join();
     rcv.join();
+    rcv_clients.join();
 
     shutdown(client_sock, SD_SEND);
     closesocket(client_sock);
@@ -126,8 +129,16 @@ void send_msg(SOCKET sock){
             continue;
         }
 
+        // Handle commands
+        if (std::string(szBuff) == "/help"){
+            printf("Available commands:\n");
+            printf("/help - Show this help message\n");
+            printf("/quit - Quit the chat\n");
+            continue;
+        }
+
         // Quit
-        if (std::string(szBuff) == "#Quit#"|| std::string(szBuff) == "#quit#"){
+        if (std::string(szBuff) == "/quit"){
             closesocket(sock);
             exit(0);
         }
@@ -158,7 +169,7 @@ void recv_msg(SOCKET sock){
         // Get respond from server
         msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
         if (msg_len == SOCKET_ERROR){
-            fprintf(stderr, "send() failed with error %d\n", WSAGetLastError());
+            fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
             break;
         }
 
@@ -174,5 +185,30 @@ void recv_msg(SOCKET sock){
         if(strcmp(szBuff, msg.c_str()) != 0){
             printf("%s\n", szBuff);
         }
+    }
+}
+
+void recv_clients_list(SOCKET sock){
+    int msg_len;
+    char szBuff[BUFFER_SIZE] = {0};
+
+    while(true){
+        // Get the client list from server
+        msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
+        if (msg_len == SOCKET_ERROR){
+            fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
+            break;
+        }
+
+        // Check if server closed connection
+        if (msg_len == 0){
+            closesocket(sock);
+            printf("server closed connection\n");
+            break;
+        }
+
+        // Display the client list
+        szBuff[msg_len] = '\0';
+        printf("Current clients: %s\n", szBuff);
     }
 }
