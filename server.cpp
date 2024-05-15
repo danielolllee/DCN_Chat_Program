@@ -362,7 +362,7 @@ void handle_msg(const std::string &msg, SOCKET sender) {
         }
     }
 
-    // Group Message
+    // Chatroom Message
     for (const auto &it : msg_socks){
         send(it.second, msg.c_str(), msg.length()+1, 0);
     }

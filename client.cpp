@@ -129,8 +129,14 @@ void send_msg(SOCKET sock){
         // Handle commands
         if (std::string(szBuff) == "#help"){
             printf("Available commands:\n");
-            printf("#help - Show this help message\n");
+            printf("Create Group: Group @[user1 user2...] Group name, password\n");
+            printf("Add into a Group: Group_add @Group name, password\n");
+            printf("Delete a Group: Group_del @Group name, password\n");
+            printf("Direct Message: @username msg\n");
+            printf("Group Message: @[Group name] msg\n");
+            printf("Chatroom Message: msg\n");
             printf("#clientList - Show the current online client list\n");
+            printf("#help - Show this help message\n");
             printf("#quit - Quit the chat\n");
             continue;
         }
