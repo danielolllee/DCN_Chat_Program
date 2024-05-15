@@ -17,7 +17,7 @@
 void handle_conn(SOCKET sock);
 void handle_msg(const std::string &msg, SOCKET sender);
 void command_listener();
-void broadcast_clients_list();
+void send_clients_list(SOCKET sock);
 
 int client_count = 0;
 bool server_status = true;
@@ -26,6 +26,7 @@ std::unordered_map<std::string, int> msg_socks;
 struct Group {
     std::unordered_set<std::string> members;
     std::string password;
+    std::string admin;
 };
 std::unordered_map<std::string, Group> groups;
 
@@ -134,7 +135,11 @@ void handle_conn(SOCKET sock){
         msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
         if (msg_len == SOCKET_ERROR){
             fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
-            break;
+            mtx.lock();
+            client_count--;
+            mtx.unlock();
+            closesocket(sock);
+            return;
         }
         if (msg_len == 0){
             printf("Client %s closed connection\n", name);
@@ -142,7 +147,7 @@ void handle_conn(SOCKET sock){
             client_count--;
             mtx.unlock();
             closesocket(sock);
-            break;
+            return;
         }
 
         strncpy(msg_prefix, szBuff, 12);
@@ -156,11 +161,10 @@ void handle_conn(SOCKET sock){
                        sock, name);
                 msg_socks[name] = sock;
                 handle_msg(szBuff, sock);
-                broadcast_clients_list();
                 break;
             }
             else{
-                feedback_msg = "User " + std::string(name) + " already exists. Please choose another one!";
+                feedback_msg = "User " + std::string(name) + " already exists. Please choose another one!\n";
                 send(sock, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                 continue;
             }
@@ -186,6 +190,7 @@ void handle_conn(SOCKET sock){
         szBuff[msg_len] = '\0';
         // Successfully receive notification
         printf("Bytes Received: %d, message: %s from %s\n", msg_len, szBuff, name);
+
         // Handle message
         handle_msg(std::string(szBuff), sock);
     }
@@ -196,7 +201,6 @@ void handle_conn(SOCKET sock){
     msg_socks.erase(name);
     client_count--;
     mtx.unlock();
-    broadcast_clients_list();
     closesocket(sock);
     return;
 }
@@ -207,8 +211,18 @@ void handle_msg(const std::string &msg, SOCKET sender) {
     if(sender != -1) {
         std::smatch match;
         std::regex group_create_regex(R"(\[(\S+)\] Group @\[([^\]]+)\] ([^,]+), (\S+))");
+        std::regex group_add_regex(R"(\[(\S+)\] Group_add @([^,]+), (\S+))");
+        std::regex group_del_regex(R"(\[(\S+)\] Group_del @([^,]+), (\S+))");
+        std::regex client_list_regex(R"(\[(\S+)\] #applyforclientList)");
 
-        // Create group
+        if (std::regex_match(msg, match, client_list_regex)) {
+            std::string sender_name = match[1];
+            send_clients_list(sender);
+            mtx.unlock();
+            return;
+        }
+
+        // Group Create
         if (std::regex_match(msg, match, group_create_regex)) {
             std::string sender_name = match[1];
             std::string group_members_str = match[2];
@@ -231,13 +245,72 @@ void handle_msg(const std::string &msg, SOCKET sender) {
             }
 
             if (all_members_exist) {
-                groups[group_name] = {group_members, password};
-                std::string feedback_msg = "Group " + group_name + " created successfully.\n";
+                groups[group_name] = {group_members, password, sender_name};
+                std::string feedback_msg = "Group " + group_name + " created successfully.";
                 for (const auto &m : group_members) {
                     send(msg_socks[m], feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                 }
             } else {
-                std::string feedback_msg = "Error: One or more users do not exist. Group not created.\n";
+                std::string feedback_msg = "Error: One or more users do not exist. Group not created.";
+                send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+            }
+
+            mtx.unlock();
+            return;
+        }
+
+        // Group Add
+        if (std::regex_match(msg, match, group_add_regex)) {
+            std::string sender_name = match[1];
+            std::string group_name = match[2];
+            std::string password = match[3];
+
+            auto group_it = groups.find(group_name);
+            if (group_it != groups.end()) {
+                if (group_it->second.password == password) {
+                    group_it->second.members.insert(sender_name);
+                    std::string feedback_msg = "User " + sender_name + " added to group " + group_name + " successfully.";
+                    send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                } else {
+                    std::string feedback_msg = "Error: Incorrect password for group " + group_name + ".";
+                    send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                }
+            }
+            else {
+                std::string feedback_msg = "Error: Group " + group_name + " does not exist.";
+                send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+            }
+
+            mtx.unlock();
+            return;
+        }
+
+        // Group Del
+        if (std::regex_match(msg, match, group_del_regex)) {
+            std::string sender_name = match[1];
+            std::string group_name = match[2];
+            std::string password = match[3];
+
+            auto group_it = groups.find(group_name);
+            if (group_it != groups.end()) {
+                if (group_it->second.admin == sender_name) {
+                    if (group_it->second.password == password) {
+                        groups.erase(group_it);
+                        std::string feedback_msg = "Group " + group_name + " has been deleted successfully.";
+                        send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                    }
+                    else {
+                        std::string feedback_msg = "Error: Incorrect password for group " + group_name + ".";
+                        send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                    }
+                }
+                else {
+                    std::string feedback_msg = "Error: Only the group admin can delete the group.";
+                    send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                }
+            }
+            else {
+                std::string feedback_msg = "Error: Group " + group_name + " does not exist.";
                 send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
             }
 
@@ -251,18 +324,20 @@ void handle_msg(const std::string &msg, SOCKET sender) {
 
         // Group chat message
         if (msg.compare(first_space + 1, 2, group_prefix) == 0) {
+            std::string send_name = msg.substr(1, first_space - 2);
             int group_start = msg.find(group_prefix) + group_prefix.length();
             int group_end = msg.find(']', group_start);
             std::string group_name = msg.substr(group_start, group_end - group_start);
-            std::string message = msg.substr(group_end + 1);
+            std::string message = msg;
 
             auto group_it = groups.find(group_name);
             if (group_it != groups.end()) {
                 for (const auto &member : group_it->second.members) {
                     send(msg_socks[member], message.c_str(), message.length() + 1, 0);
                 }
-            } else {
-                std::string feedback_msg = "Error: Group " + group_name + " does not exist.\n";
+            }
+            else {
+                std::string feedback_msg = "Error: Group " + group_name + " does not exist.";
                 send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
             }
             mtx.unlock();
@@ -295,16 +370,14 @@ void handle_msg(const std::string &msg, SOCKET sender) {
     mtx.unlock();
 }
 
-void broadcast_clients_list() {
+void send_clients_list(SOCKET sock) {
     std::string clients_list = "Current clients: ";
     for (const auto& pair : msg_socks) {
         clients_list += pair.first + " ";
     }
     clients_list.pop_back(); // Remove the trailing space
-
-    for (const auto& pair : msg_socks) {
-        send(pair.second, clients_list.c_str(), clients_list.length() + 1, 0);
-    }
+    send(sock, clients_list.c_str(), clients_list.length() + 1, 0);
+    return;
 }
 
 void command_listener() {

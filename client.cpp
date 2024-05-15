@@ -11,7 +11,6 @@
 
 void send_msg(SOCKET sock);
 void recv_msg(SOCKET sock);
-void recv_clients_list(SOCKET sock);
 
 std::string name, msg;
 
@@ -104,11 +103,9 @@ int main(){
     // Send & Recv messages
     std::thread snd(send_msg, client_sock);
     std::thread rcv(recv_msg, client_sock);
-    std::thread rcv_clients(recv_clients_list, client_sock);
 
     snd.join();
     rcv.join();
-    rcv_clients.join();
 
     shutdown(client_sock, SD_SEND);
     closesocket(client_sock);
@@ -130,20 +127,29 @@ void send_msg(SOCKET sock){
         }
 
         // Handle commands
-        if (std::string(szBuff) == "/help"){
+        if (std::string(szBuff) == "#help"){
             printf("Available commands:\n");
-            printf("/help - Show this help message\n");
-            printf("/quit - Quit the chat\n");
+            printf("#help - Show this help message\n");
+            printf("#clientList - Show the current online client list\n");
+            printf("#quit - Quit the chat\n");
             continue;
         }
 
+        // Client List
+        if (std::string(szBuff) == "#clientList"){
+            msg = "[" + name + "] " + "#applyforclientList";
+        }
+
         // Quit
-        if (std::string(szBuff) == "/quit"){
+        else if (std::string(szBuff) == "#quit"){
             closesocket(sock);
+            WSACleanup();
             exit(0);
         }
 
-        msg = "[" + name + "] " + szBuff;
+        else{
+            msg = "[" + name + "] " + szBuff;
+        }
 
         // Send input to server
         msg_len = send(sock, msg.c_str(), msg.length() + 1, 0);
@@ -169,15 +175,18 @@ void recv_msg(SOCKET sock){
         // Get respond from server
         msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
         if (msg_len == SOCKET_ERROR){
-            fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
-            break;
+            fprintf(stderr, "recv() failed with error %d\nProgram will be closed in 3s.\n", WSAGetLastError());
+            closesocket(sock);
+            Sleep(3000);
+            exit(-1);
         }
 
         // Check if server closed connection
         if (msg_len == 0){
+            printf("server closed connection\nProgram will be closed in 3s.\n");
             closesocket(sock);
-            printf("server closed connection\n");
-            break;
+            Sleep(3000);
+            exit(-1);
         }
 
         // Display other user's messages
@@ -185,30 +194,5 @@ void recv_msg(SOCKET sock){
         if(strcmp(szBuff, msg.c_str()) != 0){
             printf("%s\n", szBuff);
         }
-    }
-}
-
-void recv_clients_list(SOCKET sock){
-    int msg_len;
-    char szBuff[BUFFER_SIZE] = {0};
-
-    while(true){
-        // Get the client list from server
-        msg_len = recv(sock, szBuff, sizeof(szBuff)-1, 0);
-        if (msg_len == SOCKET_ERROR){
-            fprintf(stderr, "recv() failed with error %d\n", WSAGetLastError());
-            break;
-        }
-
-        // Check if server closed connection
-        if (msg_len == 0){
-            closesocket(sock);
-            printf("server closed connection\n");
-            break;
-        }
-
-        // Display the client list
-        szBuff[msg_len] = '\0';
-        printf("Current clients: %s\n", szBuff);
     }
 }
