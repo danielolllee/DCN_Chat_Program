@@ -3,23 +3,30 @@
 #include <ws2tcpip.h>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 #include <iostream>
 #include <thread>
 #include <sstream>
+#include <regex>
 
 #define SERVER_PORT 5019
 #define BUFFER_SIZE 256
 #define MAX_CLIENT 128
 
 void handle_conn(SOCKET sock);
-void handle_msg(const std::string &msg);
+void handle_msg(const std::string &msg, SOCKET sender);
 void command_listener();
 
 int client_count = 0;
 bool server_status = true;
 std::mutex mtx;
 std::unordered_map<std::string, int> msg_socks;
+struct Group {
+    std::unordered_set<std::string> members;
+    std::string password;
+};
+std::unordered_map<std::string, Group> groups;
 
 int main(){
     WSADATA wsaData;
@@ -147,7 +154,7 @@ void handle_conn(SOCKET sock){
                        inet_ntop(AF_INET, &(client_addr.sin_addr), addr_buffer, INET_ADDRSTRLEN),
                        sock, name);
                 msg_socks[name] = sock;
-                handle_msg(szBuff);
+                handle_msg(szBuff, sock);
                 break;
             }
             else{
@@ -177,13 +184,12 @@ void handle_conn(SOCKET sock){
         szBuff[msg_len] = '\0';
         // Successfully receive notification
         printf("Bytes Received: %d, message: %s from %s\n", msg_len, szBuff, name);
-
         // Handle message
-        handle_msg(std::string(szBuff));
+        handle_msg(std::string(szBuff), sock);
     }
 
     feedback_msg = "[System] " + std::string(name) + " exit the chatroom.\n";
-    handle_msg(feedback_msg);
+    handle_msg(feedback_msg, sock);
     mtx.lock();
     msg_socks.erase(name);
     client_count--;
@@ -192,32 +198,95 @@ void handle_conn(SOCKET sock){
     return;
 }
 
-void handle_msg(const std::string &msg){
+void handle_msg(const std::string &msg, SOCKET sender) {
     mtx.lock();
 
-    std::string prefix = "@";
-    int first_space = msg.find_first_of(" ");
+    if(sender != -1) {
+        std::smatch match;
+        std::regex group_create_regex(R"(\[(\S+)\] Group @\[([^\]]+)\] ([^,]+), (\S+))");
 
-    // Direct message
-    if (msg.compare(first_space+1, 1, prefix) == 0){
-        int space = msg.find_first_of(" ", first_space+1);
-        std::string receive_name = msg.substr(first_space+2, space-first_space-2);
-        std::string send_name = msg.substr(1, first_space-2);
-        // If user does not exist
-        if(msg_socks.find(receive_name) == msg_socks.end()){
-            std::string error_msg = "[error] there is no client named " + receive_name;
-            send(msg_socks[send_name], error_msg.c_str(), error_msg.length()+1, 0);
+        // Create group
+        if (std::regex_match(msg, match, group_create_regex)) {
+            std::string sender_name = match[1];
+            std::string group_members_str = match[2];
+            std::string group_name = match[3];
+            std::string password = match[4];
+
+            group_members_str += " " + sender_name;
+
+            std::istringstream iss(group_members_str);
+            std::unordered_set<std::string> group_members;
+            std::string member;
+            bool all_members_exist = true;
+
+            while (std::getline(iss, member, ' ')) {
+                if (msg_socks.find(member) == msg_socks.end()) {
+                    all_members_exist = false;
+                    break;
+                }
+                group_members.insert(member);
+            }
+
+            if (all_members_exist) {
+                groups[group_name] = {group_members, password};
+                std::string feedback_msg = "Group " + group_name + " created successfully.\n";
+                for (const auto &m : group_members) {
+                    send(msg_socks[m], feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                }
+            } else {
+                std::string feedback_msg = "Error: One or more users do not exist. Group not created.\n";
+                send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+            }
+
+            mtx.unlock();
+            return;
         }
-        else{
-            send(msg_socks[receive_name], msg.c_str(), msg.length()+1, 0);
-            send(msg_socks[send_name], msg.c_str(), msg.length()+1, 0);
+
+        std::string dm_prefix = "@";
+        std::string group_prefix = "@[";
+        int first_space = msg.find_first_of(" ");
+
+        // Group chat message
+        if (msg.compare(first_space + 1, 2, group_prefix) == 0) {
+            int group_start = msg.find(group_prefix) + group_prefix.length();
+            int group_end = msg.find(']', group_start);
+            std::string group_name = msg.substr(group_start, group_end - group_start);
+            std::string message = msg.substr(group_end + 1);
+
+            auto group_it = groups.find(group_name);
+            if (group_it != groups.end()) {
+                for (const auto &member : group_it->second.members) {
+                    send(msg_socks[member], message.c_str(), message.length() + 1, 0);
+                }
+            } else {
+                std::string feedback_msg = "Error: Group " + group_name + " does not exist.\n";
+                send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+            }
+            mtx.unlock();
+            return;
+        }
+
+        // Direct message
+        if (msg.compare(first_space + 1, 1, dm_prefix) == 0) {
+            int space = msg.find_first_of(" ", first_space + 1);
+            std::string receive_name = msg.substr(first_space + 2, space - first_space - 2);
+            std::string send_name = msg.substr(1, first_space - 2);
+            // If user does not exist
+            if (msg_socks.find(receive_name) == msg_socks.end()) {
+                std::string error_msg = "[error] there is no client named " + receive_name;
+                send(msg_socks[send_name], error_msg.c_str(), error_msg.length() + 1, 0);
+            } else {
+                send(msg_socks[receive_name], msg.c_str(), msg.length() + 1, 0);
+                send(msg_socks[send_name], msg.c_str(), msg.length() + 1, 0);
+            }
+            mtx.unlock();
+            return;
         }
     }
+
     // Group Message
-    else {
-        for (const auto &it : msg_socks){
-            send(it.second, msg.c_str(), msg.length()+1, 0);
-        }
+    for (const auto &it : msg_socks){
+        send(it.second, msg.c_str(), msg.length()+1, 0);
     }
 
     mtx.unlock();
@@ -255,7 +324,7 @@ void command_listener() {
                 msg_socks.erase(it);
                 std::cout << "User " << arg << " has been deleted.\n";
                 feedback_msg = "#Client " + arg + " has been deleted from this chatroom.\n";
-                handle_msg(feedback_msg);
+                handle_msg(feedback_msg, -1);
                 client_count--;
             }
             else {
