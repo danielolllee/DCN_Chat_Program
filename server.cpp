@@ -124,7 +124,7 @@ void handle_conn(SOCKET sock){
     // Command Prefixes
     char new_client_prefix[13] = "#New Client:";
 
-    // Get the address information inside the msg_sock socket descriptor
+    // Get the address information inside the sock socket descriptor
     struct sockaddr_in client_addr{};
     int addr_len = sizeof(client_addr);
     getpeername(sock, (struct sockaddr*)&client_addr, &addr_len);
@@ -213,6 +213,7 @@ void handle_msg(const std::string &msg, SOCKET sender) {
         std::regex group_create_regex(R"(\[(\S+)\] Group @\[([^\]]+)\] ([^,]+), (\S+))");
         std::regex group_add_regex(R"(\[(\S+)\] Group_add @([^,]+), (\S+))");
         std::regex group_del_regex(R"(\[(\S+)\] Group_del @([^,]+), (\S+))");
+        std::regex group_delp_regex(R"(\[(\S+)\] Group_delp @([^,]+), ([^,]+), (\S+))");
         std::regex client_list_regex(R"(\[(\S+)\] #applyforclientList)");
 
         if (std::regex_match(msg, match, client_list_regex)) {
@@ -246,12 +247,12 @@ void handle_msg(const std::string &msg, SOCKET sender) {
 
             if (all_members_exist) {
                 groups[group_name] = {group_members, password, sender_name};
-                std::string feedback_msg = "Group " + group_name + " created successfully.";
+                std::string feedback_msg = "[System] Group " + group_name + " created successfully.";
                 for (const auto &m : group_members) {
                     send(msg_socks[m], feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                 }
             } else {
-                std::string feedback_msg = "Error: One or more users do not exist. Group not created.";
+                std::string feedback_msg = "[System] Error: One or more users do not exist. Group not created.";
                 send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
             }
 
@@ -269,15 +270,56 @@ void handle_msg(const std::string &msg, SOCKET sender) {
             if (group_it != groups.end()) {
                 if (group_it->second.password == password) {
                     group_it->second.members.insert(sender_name);
-                    std::string feedback_msg = "User " + sender_name + " added to group " + group_name + " successfully.";
+                    std::string feedback_msg = "[System] User " + sender_name + " added to group " + group_name + " successfully.";
                     send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                 } else {
-                    std::string feedback_msg = "Error: Incorrect password for group " + group_name + ".";
+                    std::string feedback_msg = "[System] Error: Incorrect password for group " + group_name + ".";
                     send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                 }
             }
             else {
-                std::string feedback_msg = "Error: Group " + group_name + " does not exist.";
+                std::string feedback_msg = "[System] Error: Group " + group_name + " does not exist.";
+                send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+            }
+
+            mtx.unlock();
+            return;
+        }
+
+        // Group Del Member
+        if (std::regex_match(msg, match, group_delp_regex)) {
+            std::string sender_name = match[1];
+            std::string group_name = match[2];
+            std::string user_to_delete = match[3];
+            std::string password = match[4];
+
+            auto group_it = groups.find(group_name);
+            if (group_it != groups.end()) {
+                if (group_it->second.admin == sender_name) {
+                    if (group_it->second.password == password) {
+                        if (group_it->second.members.find(user_to_delete) != group_it->second.members.end()) {
+                            group_it->second.members.erase(user_to_delete);
+                            std::string feedback_msg =
+                                    "[System] User " + user_to_delete + " has been removed from group " + group_name + ".";
+                            send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                        }
+                        else{
+                            std::string error_msg = "[System] Error: You are not a member of group <" + group_name + ">.";
+                            send(sender, error_msg.c_str(), error_msg.length() + 1, 0);
+                        }
+                    }
+                    else {
+                        std::string feedback_msg = "[System] Error: Incorrect password for group " + group_name + ".";
+                        send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                    }
+                }
+                else {
+                    std::string feedback_msg = "[System] Error: Only the group admin can delete a group member.";
+                    send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
+                }
+            }
+            else {
+                std::string feedback_msg = "[System] Error: Group " + group_name + " does not exist.";
                 send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
             }
 
@@ -296,21 +338,21 @@ void handle_msg(const std::string &msg, SOCKET sender) {
                 if (group_it->second.admin == sender_name) {
                     if (group_it->second.password == password) {
                         groups.erase(group_it);
-                        std::string feedback_msg = "Group " + group_name + " has been deleted successfully.";
+                        std::string feedback_msg = "[System] Group " + group_name + " has been deleted successfully.";
                         send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                     }
                     else {
-                        std::string feedback_msg = "Error: Incorrect password for group " + group_name + ".";
+                        std::string feedback_msg = "[System] Error: Incorrect password for group " + group_name + ".";
                         send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                     }
                 }
                 else {
-                    std::string feedback_msg = "Error: Only the group admin can delete the group.";
+                    std::string feedback_msg = "[System] Error: Only the group admin can delete the group.";
                     send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                 }
             }
             else {
-                std::string feedback_msg = "Error: Group " + group_name + " does not exist.";
+                std::string feedback_msg = "[System] Error: Group " + group_name + " does not exist.";
                 send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
             }
 
@@ -332,12 +374,18 @@ void handle_msg(const std::string &msg, SOCKET sender) {
 
             auto group_it = groups.find(group_name);
             if (group_it != groups.end()) {
-                for (const auto &member : group_it->second.members) {
-                    send(msg_socks[member], message.c_str(), message.length() + 1, 0);
+                if (group_it->second.members.find(send_name) != group_it->second.members.end()) {
+                    for (const auto &member : group_it->second.members) {
+                        send(msg_socks[member], message.c_str(), message.length() + 1, 0);
+                    }
+                }
+                else{
+                    std::string error_msg = "[System] Error: You are not a member of group <" + group_name + ">.";
+                    send(msg_socks[send_name], error_msg.c_str(), error_msg.length() + 1, 0);
                 }
             }
             else {
-                std::string feedback_msg = "Error: Group " + group_name + " does not exist.";
+                std::string feedback_msg = "[System] Error: Group " + group_name + " does not exist.";
                 send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
             }
             mtx.unlock();
@@ -351,7 +399,7 @@ void handle_msg(const std::string &msg, SOCKET sender) {
             std::string send_name = msg.substr(1, first_space - 2);
             // If user does not exist
             if (msg_socks.find(receive_name) == msg_socks.end()) {
-                std::string error_msg = "[error] there is no client named " + receive_name;
+                std::string error_msg = "[System] Error: there is no client named " + receive_name;
                 send(msg_socks[send_name], error_msg.c_str(), error_msg.length() + 1, 0);
             } else {
                 send(msg_socks[receive_name], msg.c_str(), msg.length() + 1, 0);
@@ -371,7 +419,7 @@ void handle_msg(const std::string &msg, SOCKET sender) {
 }
 
 void send_clients_list(SOCKET sock) {
-    std::string clients_list = "Current clients: ";
+    std::string clients_list = "[System] Current clients: ";
     for (const auto& pair : msg_socks) {
         clients_list += pair.first + " ";
     }
@@ -391,7 +439,7 @@ void command_listener() {
         iss >> cmd >> arg;
 
         if (cmd == "#quit" || cmd == "#Quit") {
-            std::cout << "Shutting down server...\n";
+            std::cout << "[System] Shutting down server...\n";
             server_status = false;
 
             // Close all client sockets
@@ -408,20 +456,22 @@ void command_listener() {
             mtx.lock();
             auto it = msg_socks.find(arg);
             if (it != msg_socks.end()) {
-                closesocket(it->second);
-                msg_socks.erase(it);
-                std::cout << "User " << arg << " has been deleted.\n";
-                feedback_msg = "#Client " + arg + " has been deleted from this chatroom.\n";
-                handle_msg(feedback_msg, -1);
-                client_count--;
+                if (closesocket(it->second) == 0) {
+                    msg_socks.erase(it);
+                    std::cout << "[System] User " << arg << " has been deleted.\n";
+                    client_count--;
+                }
+                else {
+                    std::cerr << "[System] Failed to close socket for user " << arg << ". Error: " << WSAGetLastError() << "\n";
+                }
             }
             else {
-                std::cout << "No such user: " << arg << "\n";
+                std::cout << "[System] No such user: " << arg << "\n";
             }
             mtx.unlock();
         }
         else{
-            printf("Invalid command.\n");
+            printf("[System] Invalid command.\n");
         }
     }
 }

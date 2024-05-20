@@ -100,6 +100,20 @@ int main(){
         }
     }
 
+    printf("### Chat commands:\n");
+    printf("Chatroom Message: msg\n");
+    printf("Direct Message: @username msg\n");
+    printf("Group Message: @[Group name] msg\n");
+    printf("### Group commands:\n");
+    printf("Create Group: Group @[user1 user2...] Group name, password\n");
+    printf("Add into a Group: Group_add @Group name, password\n");
+    printf("Delete a Group: Group_del @Group name, password\n");
+    printf("Delete a Group Member: Group_delp @Group name, username, password\n");
+    printf("### Hints:\n");
+    printf("#clientList - Show the current online client list\n");
+    printf("#help - Show this help message\n");
+    printf("#quit - Quit the chat\n");
+
     // Send & Recv messages
     std::thread snd(send_msg, client_sock);
     std::thread rcv(recv_msg, client_sock);
@@ -128,13 +142,16 @@ void send_msg(SOCKET sock){
 
         // Handle commands
         if (std::string(szBuff) == "#help"){
-            printf("Available commands:\n");
+            printf("### Chat commands:\n");
+            printf("Chatroom Message: msg\n");
+            printf("Direct Message: @username msg\n");
+            printf("Group Message: @[Group name] msg\n");
+            printf("### Group commands:\n");
             printf("Create Group: Group @[user1 user2...] Group name, password\n");
             printf("Add into a Group: Group_add @Group name, password\n");
             printf("Delete a Group: Group_del @Group name, password\n");
-            printf("Direct Message: @username msg\n");
-            printf("Group Message: @[Group name] msg\n");
-            printf("Chatroom Message: msg\n");
+            printf("Delete a Group Member: Group_delp @Group name, username, password\n");
+            printf("### Hints:\n");
             printf("#clientList - Show the current online client list\n");
             printf("#help - Show this help message\n");
             printf("#quit - Quit the chat\n");
