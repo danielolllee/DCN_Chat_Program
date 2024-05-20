@@ -304,7 +304,7 @@ void handle_msg(const std::string &msg, SOCKET sender) {
                             send(sender, feedback_msg.c_str(), feedback_msg.length() + 1, 0);
                         }
                         else{
-                            std::string error_msg = "[System] Error: You are not a member of group <" + group_name + ">.";
+                            std::string error_msg = "[System] Error: User "+ user_to_delete +" is not a member of group <" + group_name + ">.";
                             send(sender, error_msg.c_str(), error_msg.length() + 1, 0);
                         }
                     }
